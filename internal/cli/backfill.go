@@ -13,6 +13,7 @@ func newBackfillCmd() *cobra.Command {
 		handle    string
 		timezone  string
 		maxPerDay int
+		force     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "backfill",
@@ -20,7 +21,8 @@ func newBackfillCmd() *cobra.Command {
 		Long: `Fetches your public Boot.dev activity heatmap and creates one backdated
 git commit per activity unit (count commits for a day with count N).
 
-Already-synced backfill-N.json markers are skipped (idempotent).`,
+Markers already committed in git are skipped (idempotent).
+If a previous run left files on disk but failed to push, re-running will push them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -32,6 +34,7 @@ Already-synced backfill-N.json markers are skipped (idempotent).`,
 				Handle:    handle,
 				Timezone:  timezone,
 				MaxPerDay: maxPerDay,
+				Force:     force,
 			})
 			if err != nil {
 				return err
@@ -41,12 +44,20 @@ Already-synced backfill-N.json markers are skipped (idempotent).`,
 			if stats.CappedDays > 0 {
 				fmt.Printf(" | Capped days: %d", stats.CappedDays)
 			}
+			if stats.Pushed {
+				fmt.Printf(" | Pushed to GitHub")
+			}
 			fmt.Println()
+			if stats.Created == 0 && stats.Skipped > 0 && !stats.Pushed {
+				fmt.Println("Nothing new to sync — markers are already committed and pushed.")
+				fmt.Println("To rebuild: boothub backfill --force")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&handle, "handle", "", "Boot.dev handle (default: config)")
 	cmd.Flags().StringVar(&timezone, "timezone", "", "IANA timezone (default: config)")
 	cmd.Flags().IntVar(&maxPerDay, "max-per-day", 0, "Cap commits per day (0 = uncapped intensity match)")
+	cmd.Flags().BoolVar(&force, "force", false, "Recreate commits even if markers already exist in git")
 	return cmd
 }

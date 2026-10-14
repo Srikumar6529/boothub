@@ -66,6 +66,38 @@ func (r Repo) HasFile(rel string) bool {
 	return err == nil
 }
 
+// FileInHEAD reports whether rel is present in the current HEAD commit.
+func (r Repo) FileInHEAD(rel string) bool {
+	_, err := r.run(nil, "cat-file", "-e", "HEAD:"+filepath.ToSlash(rel))
+	return err == nil
+}
+
+// AheadOfRemote is true when local branch has commits not yet on remote.
+func (r Repo) AheadOfRemote(remote, branch string) bool {
+	// Ensure we have a remote-tracking ref; if missing, treat as ahead when we have commits.
+	if _, err := r.run(nil, "rev-parse", "--verify", remote+"/"+branch); err != nil {
+		_, err2 := r.run(nil, "rev-parse", "--verify", "HEAD")
+		return err2 == nil
+	}
+	out, err := r.run(nil, "rev-list", "--count", remote+"/"+branch+"..HEAD")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) != "0"
+}
+
+// EnsureIdentity sets a local user.name/email if git cannot commit yet.
+func (r Repo) EnsureIdentity() error {
+	if _, err := r.run(nil, "config", "--get", "user.email"); err == nil {
+		return nil
+	}
+	if _, err := r.run(nil, "config", "user.email", "boothub@users.noreply.github.com"); err != nil {
+		return err
+	}
+	_, err := r.run(nil, "config", "user.name", "boothub")
+	return err
+}
+
 func (r Repo) IsGitRepo() bool {
 	info, err := os.Stat(filepath.Join(r.Path, ".git"))
 	return err == nil && info.IsDir()

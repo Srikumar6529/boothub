@@ -18,6 +18,7 @@ type Request struct {
 	ActivityCount int
 	Backdate      bool
 	SkipPush      bool
+	Force         bool // rewrite marker even if identical on disk
 }
 
 type Result struct {
@@ -55,13 +56,13 @@ func (e *Engine) Sync(req Request) (Result, error) {
 	m := marker.New(req.LessonID, req.Trigger, req.When)
 	m.Note = req.Note
 	m.ActivityCount = req.ActivityCount
-
-	identical, err := marker.Identical(e.Cfg.RepoPath, rel, m)
-	if err != nil {
-		return Result{}, err
-	}
-	if identical {
-		return Result{Skipped: true, RelPath: rel, Message: "marker already up to date"}, nil
+	if req.Force {
+		// Ensure content changes so git creates a new commit.
+		if m.Note == "" {
+			m.Note = "force-rebuild"
+		} else {
+			m.Note = m.Note + " | force-rebuild"
+		}
 	}
 
 	repo := gitops.Repo{Path: e.Cfg.RepoPath}
@@ -69,8 +70,20 @@ func (e *Engine) Sync(req Request) (Result, error) {
 		return Result{}, fmt.Errorf("not a git repo: %s", e.Cfg.RepoPath)
 	}
 
-	if err := marker.Write(e.Cfg.RepoPath, rel, m); err != nil {
+	identical, err := marker.Identical(e.Cfg.RepoPath, rel, m)
+	if err != nil {
 		return Result{}, err
+	}
+	// Skip only when content matches AND it's already committed.
+	// Orphan on-disk markers (failed prior commit) must still be committed.
+	if identical && !req.Force && repo.FileInHEAD(rel) {
+		return Result{Skipped: true, RelPath: rel, Message: "marker already committed"}, nil
+	}
+
+	if !identical || req.Force || !marker.Exists(e.Cfg.RepoPath, rel) {
+		if err := marker.Write(e.Cfg.RepoPath, rel, m); err != nil {
+			return Result{}, err
+		}
 	}
 
 	if err := repo.Add(rel); err != nil {
