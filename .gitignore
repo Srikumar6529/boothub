@@ -1,0 +1,5 @@
+/boothub
+/bin/
+*.exe
+*.test
+.DS_Store
