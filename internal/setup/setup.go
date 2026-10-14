@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -170,7 +169,12 @@ func provisionRepo(name, dest string, private bool) error {
 	repo := gitops.Repo{Path: dest}
 	if repo.IsGitRepo() {
 		fmt.Printf("Using existing git repo at %s\n", dest)
-		_ = ensureGitIdentity(dest)
+		if err := repo.EnsureIdentity(); err != nil {
+			return err
+		}
+		if user, err := gitops.CurrentGitHubUser(); err == nil {
+			fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
+		}
 		return nil
 	}
 	if _, err := os.Stat(dest); err == nil {
@@ -193,7 +197,7 @@ func provisionRepo(name, dest string, private bool) error {
 		if err := repo.Init(); err != nil {
 			return err
 		}
-		if err := ensureGitIdentity(dest); err != nil {
+		if err := repo.EnsureIdentity(); err != nil {
 			return err
 		}
 		if err := repo.SetRemote("origin", cloneURL); err != nil {
@@ -215,29 +219,13 @@ func provisionRepo(name, dest string, private bool) error {
 			return fmt.Errorf("initial push failed: %w", err)
 		}
 	}
-	_ = ensureGitIdentity(dest)
+	if err := repo.EnsureIdentity(); err != nil {
+		return err
+	}
+	if user, err := gitops.CurrentGitHubUser(); err == nil {
+		fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
+	}
 	fmt.Printf("Repo ready at %s\n", dest)
-	return nil
-}
-
-func ensureGitIdentity(repoPath string) error {
-	// Prefer existing global identity; only set local fallback if missing.
-	check := exec.Command("git", "config", "--get", "user.email")
-	check.Dir = repoPath
-	if out, err := check.Output(); err == nil && strings.TrimSpace(string(out)) != "" {
-		return nil
-	}
-	cmds := [][]string{
-		{"config", "user.email", "boothub@users.noreply.github.com"},
-		{"config", "user.name", "boothub"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repoPath
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-	}
 	return nil
 }
 

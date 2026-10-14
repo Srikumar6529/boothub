@@ -113,6 +113,15 @@ Reserved for a future browser extension (`"trigger": "extension"`).
 
 ## FAQ
 
+**Commits show up as the wrong GitHub user?**  
+BootHub authors and pushes with your **`gh auth` account**, not your global git `user.email` / SSH key. Identity is set only inside the `bootdev-submissions` repo (local config). Update and re-run:
+
+```sh
+git pull
+go install ./cmd/boothub
+boothub backfill --force
+```
+
 **Doesn’t Boot.dev already sync GitHub?**  
 Their “GitHub Auth” feeds *Boot.dev’s* streak from *your* commits. BootHub does the reverse: Boot.dev activity → *your* contribution graph.
 

@@ -46,6 +46,15 @@ func (r Repo) Add(paths ...string) error {
 
 func (r Repo) Commit(msg string, dates *CommitDates) error {
 	env := []string{}
+	// Prefer gh identity for author/committer so global git user.* is ignored.
+	if user, err := CurrentGitHubUser(); err == nil {
+		env = append(env,
+			"GIT_AUTHOR_NAME="+user.Name,
+			"GIT_AUTHOR_EMAIL="+user.Email,
+			"GIT_COMMITTER_NAME="+user.Name,
+			"GIT_COMMITTER_EMAIL="+user.Email,
+		)
+	}
 	if dates != nil {
 		env = append(env,
 			"GIT_AUTHOR_DATE="+formatGitDate(dates.Author),
@@ -57,7 +66,14 @@ func (r Repo) Commit(msg string, dates *CommitDates) error {
 }
 
 func (r Repo) Push(remote, branch string) error {
-	_, err := r.run(nil, "push", "-u", remote, branch)
+	// Use gh credentials for this push only (-c overrides), so a different
+	// global git credential / SSH key does not hijack the upload.
+	args := []string{
+		"-c", "credential.helper=",
+		"-c", "credential.helper=!gh auth git-credential",
+		"push", "-u", remote, branch,
+	}
+	_, err := r.run(nil, args...)
 	return err
 }
 
@@ -86,16 +102,62 @@ func (r Repo) AheadOfRemote(remote, branch string) bool {
 	return strings.TrimSpace(out) != "0"
 }
 
-// EnsureIdentity sets a local user.name/email if git cannot commit yet.
+// EnsureIdentity sets LOCAL (repo-only) author identity from `gh auth`.
+// Does not change the user's global git config.
 func (r Repo) EnsureIdentity() error {
-	if _, err := r.run(nil, "config", "--get", "user.email"); err == nil {
-		return nil
-	}
-	if _, err := r.run(nil, "config", "user.email", "boothub@users.noreply.github.com"); err != nil {
+	user, err := CurrentGitHubUser()
+	if err != nil {
 		return err
 	}
-	_, err := r.run(nil, "config", "user.name", "boothub")
+	if _, err := r.run(nil, "config", "--local", "user.name", user.Name); err != nil {
+		return err
+	}
+	if _, err := r.run(nil, "config", "--local", "user.email", user.Email); err != nil {
+		return err
+	}
+	return r.UseGHCredentials()
+}
+
+// UseGHCredentials configures this repo only to authenticate git over HTTPS via gh.
+func (r Repo) UseGHCredentials() error {
+	// Clear then set local helper so global helpers (osxkeychain, etc.) don't win.
+	_, _ = r.run(nil, "config", "--local", "--unset-all", "credential.helper")
+	if _, err := r.run(nil, "config", "--local", "credential.helper", ""); err != nil {
+		// Some git versions reject empty helper; continue to set gh helper.
+		_ = err
+	}
+	if _, err := r.run(nil, "config", "--local", "--add", "credential.helper", "!gh auth git-credential"); err != nil {
+		return fmt.Errorf("set local gh credential helper: %w", err)
+	}
+	// Prefer HTTPS remote so gh credentials apply (SSH would use a different key).
+	return r.ensureHTTPSRemote("origin")
+}
+
+func (r Repo) ensureHTTPSRemote(name string) error {
+	url, err := r.run(nil, "remote", "get-url", name)
+	if err != nil || url == "" {
+		return nil
+	}
+	httpsURL := sshToHTTPS(url)
+	if httpsURL == url {
+		return nil
+	}
+	_, err = r.run(nil, "remote", "set-url", name, httpsURL)
 	return err
+}
+
+func sshToHTTPS(remote string) string {
+	remote = strings.TrimSpace(remote)
+	// git@github.com:Owner/repo.git → https://github.com/Owner/repo.git
+	if strings.HasPrefix(remote, "git@github.com:") {
+		path := strings.TrimPrefix(remote, "git@github.com:")
+		return "https://github.com/" + path
+	}
+	if strings.HasPrefix(remote, "ssh://git@github.com/") {
+		path := strings.TrimPrefix(remote, "ssh://git@github.com/")
+		return "https://github.com/" + path
+	}
+	return remote
 }
 
 func (r Repo) IsGitRepo() bool {
