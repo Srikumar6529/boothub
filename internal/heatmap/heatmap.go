@@ -1,4 +1,4 @@
-package main
+package heatmap
 
 import (
 	"encoding/json"
@@ -18,19 +18,19 @@ const (
 	heatmapLimit = 8 << 20
 )
 
-// heatmapBaseURL is a var so tests can point it at a local server.
-var heatmapBaseURL = "https://api.boot.dev/v1/users/public"
+// BaseURL is a var so tests can point it at a local server.
+var BaseURL = "https://api.boot.dev/v1/users/public"
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-type heatmapDay struct {
+type Day struct {
 	Date  string
 	Count int
 }
 
-type heatmapResp struct {
-	Calendar      []heatmapDay
-	GitHubCommits []heatmapDay
+type Data struct {
+	Calendar      []Day
+	GitHubCommits []Day
 	Status        string
 }
 
@@ -57,30 +57,30 @@ func parseHeatmapDay(raw json.RawMessage) (string, error) {
 func decodeDays(raw []struct {
 	Date  json.RawMessage `json:"date"`
 	Count int             `json:"count"`
-}) ([]heatmapDay, error) {
-	out := make([]heatmapDay, 0, len(raw))
+}) ([]Day, error) {
+	out := make([]Day, 0, len(raw))
 	for _, d := range raw {
 		key, err := parseHeatmapDay(d.Date)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, heatmapDay{Date: key, Count: d.Count})
+		out = append(out, Day{Date: key, Count: d.Count})
 	}
 	return out, nil
 }
 
-// fetchHeatmap retrieves the public activity heatmap bucketed by timezone.
-func fetchHeatmap(handle, timezone string) (heatmapResp, error) {
+// Fetch retrieves the public activity heatmap bucketed by timezone.
+func Fetch(handle, timezone string) (Data, error) {
 	if handle == "" {
-		return heatmapResp{}, fmt.Errorf("boot.dev handle is required")
+		return Data{}, fmt.Errorf("boot.dev handle is required")
 	}
 	if timezone == "" {
 		timezone = "UTC"
 	}
 
-	u, err := url.Parse(strings.TrimRight(heatmapBaseURL, "/") + "/" + url.PathEscape(handle) + "/activity_heatmap")
+	u, err := url.Parse(strings.TrimRight(BaseURL, "/") + "/" + url.PathEscape(handle) + "/activity_heatmap")
 	if err != nil {
-		return heatmapResp{}, err
+		return Data{}, err
 	}
 	q := u.Query()
 	q.Set("timezone", timezone)
@@ -88,7 +88,7 @@ func fetchHeatmap(handle, timezone string) (heatmapResp, error) {
 
 	body, err := httpGet(u.String())
 	if err != nil {
-		return heatmapResp{}, err
+		return Data{}, err
 	}
 
 	var parsed struct {
@@ -105,21 +105,21 @@ func fetchHeatmap(handle, timezone string) (heatmapResp, error) {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return heatmapResp{}, fmt.Errorf("parse heatmap: %w", err)
+		return Data{}, fmt.Errorf("parse heatmap: %w", err)
 	}
 	if s := strings.ToLower(parsed.Status); s != "" && s != "success" {
-		return heatmapResp{}, fmt.Errorf("heatmap API returned status %q", parsed.Status)
+		return Data{}, fmt.Errorf("heatmap API returned status %q", parsed.Status)
 	}
 
 	cal, err := decodeDays(parsed.Data.Calendar)
 	if err != nil {
-		return heatmapResp{}, err
+		return Data{}, err
 	}
 	gh, err := decodeDays(parsed.Data.GitHubCommits)
 	if err != nil {
-		return heatmapResp{}, err
+		return Data{}, err
 	}
-	return heatmapResp{Calendar: cal, GitHubCommits: gh, Status: parsed.Status}, nil
+	return Data{Calendar: cal, GitHubCommits: gh, Status: parsed.Status}, nil
 }
 
 func httpGet(rawURL string) ([]byte, error) {
@@ -159,9 +159,9 @@ func httpGet(rawURL string) ([]byte, error) {
 
 // --- cache ------------------------------------------------------------------
 
-// heatmapCache is the on-disk snapshot of the heatmap. Past days never change,
-// so repeat runs reuse it and only refresh the current day.
-type heatmapCache struct {
+// Cache is the on-disk snapshot of the heatmap. Past days never change, so
+// repeat runs reuse it and only refresh the current day.
+type Cache struct {
 	Handle    string         `json:"handle"`
 	Timezone  string         `json:"timezone"`
 	FetchedAt time.Time      `json:"fetched_at"`
@@ -169,14 +169,14 @@ type heatmapCache struct {
 	GitHub    map[string]int `json:"github_commits,omitempty"`
 }
 
-// cacheDirOverride is set by tests to avoid touching the real cache.
-var cacheDirOverride string
+// DirOverride is set by tests to avoid touching the real cache.
+var DirOverride string
 
 var unsafeFilename = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func cacheDir() (string, error) {
-	if cacheDirOverride != "" {
-		return cacheDirOverride, nil
+	if DirOverride != "" {
+		return DirOverride, nil
 	}
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -185,7 +185,7 @@ func cacheDir() (string, error) {
 	return filepath.Join(base, "boothub"), nil
 }
 
-func heatmapCachePath(handle, timezone string) (string, error) {
+func CachePath(handle, timezone string) (string, error) {
 	dir, err := cacheDir()
 	if err != nil {
 		return "", err
@@ -194,18 +194,18 @@ func heatmapCachePath(handle, timezone string) (string, error) {
 	return filepath.Join(dir, "heatmap-"+name+".json"), nil
 }
 
-func loadHeatmapCache(handle, timezone string) (heatmapCache, bool) {
-	path, err := heatmapCachePath(handle, timezone)
+func LoadCache(handle, timezone string) (Cache, bool) {
+	path, err := CachePath(handle, timezone)
 	if err != nil {
-		return heatmapCache{}, false
+		return Cache{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return heatmapCache{}, false
+		return Cache{}, false
 	}
-	var c heatmapCache
+	var c Cache
 	if json.Unmarshal(data, &c) != nil {
-		return heatmapCache{}, false
+		return Cache{}, false
 	}
 	if c.Days == nil {
 		c.Days = map[string]int{}
@@ -213,8 +213,8 @@ func loadHeatmapCache(handle, timezone string) (heatmapCache, bool) {
 	return c, true
 }
 
-func saveHeatmapCache(c heatmapCache) error {
-	path, err := heatmapCachePath(c.Handle, c.Timezone)
+func SaveCache(c Cache) error {
+	path, err := CachePath(c.Handle, c.Timezone)
 	if err != nil {
 		return err
 	}
@@ -232,9 +232,9 @@ func saveHeatmapCache(c heatmapCache) error {
 	return os.Rename(tmp, path)
 }
 
-// merge folds a freshly fetched heatmap into the cache. Fetched values win for
+// Merge folds a freshly fetched heatmap into the cache. Fetched values win for
 // days they include; older cached days are kept.
-func (c *heatmapCache) merge(hm heatmapResp, fetchedAt time.Time) {
+func (c *Cache) Merge(hm Data, fetchedAt time.Time) {
 	if c.Days == nil {
 		c.Days = map[string]int{}
 	}
@@ -256,7 +256,7 @@ func (c *heatmapCache) merge(hm heatmapResp, fetchedAt time.Time) {
 	c.FetchedAt = fetchedAt
 }
 
-func (c heatmapCache) freshFor(now time.Time, loc *time.Location) bool {
+func (c Cache) FreshFor(now time.Time, loc *time.Location) bool {
 	if c.FetchedAt.IsZero() {
 		return false
 	}

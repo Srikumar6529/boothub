@@ -1,4 +1,4 @@
-package main
+package gitops
 
 import (
 	"bytes"
@@ -12,18 +12,21 @@ import (
 	"time"
 )
 
-// ghUser is the identity from `gh auth` (not the global git config).
-type ghUser struct {
+// DefaultReadme seeds a brand-new submissions repo.
+const DefaultReadme = "# bootdev-submissions\n\nSynced automatically by [BootHub](https://github.com/Srikumar6529/boothub).\n"
+
+// User is the identity from `gh auth` (not the global git config).
+type User struct {
 	Login string
 	ID    int64
 	Name  string
 	Email string
 }
 
-func currentGHUser() (ghUser, error) {
+func CurrentUser() (User, error) {
 	out, err := runCmd("", nil, "gh", "api", "user", "--jq", "{login:.login,id:.id,name:.name}")
 	if err != nil {
-		return ghUser{}, fmt.Errorf("%s (run: gh auth login)", err)
+		return User{}, fmt.Errorf("%s (run: gh auth login)", err)
 	}
 	var raw struct {
 		Login string `json:"login"`
@@ -31,10 +34,10 @@ func currentGHUser() (ghUser, error) {
 		Name  string `json:"name"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return ghUser{}, fmt.Errorf("parse gh user: %w", err)
+		return User{}, fmt.Errorf("parse gh user: %w", err)
 	}
 	if raw.Login == "" || raw.ID == 0 {
-		return ghUser{}, fmt.Errorf("gh api user returned empty login/id")
+		return User{}, fmt.Errorf("gh api user returned empty login/id")
 	}
 	name := strings.TrimSpace(raw.Name)
 	if name == "" {
@@ -42,13 +45,13 @@ func currentGHUser() (ghUser, error) {
 	}
 	// Linking commits to the account without exposing a personal email.
 	email := fmt.Sprintf("%d+%s@users.noreply.github.com", raw.ID, raw.Login)
-	return ghUser{Login: raw.Login, ID: raw.ID, Name: name, Email: email}, nil
+	return User{Login: raw.Login, ID: raw.ID, Name: name, Email: email}, nil
 }
 
-type repo struct{ path string }
+type Repo struct{ Path string }
 
-func (r repo) run(env []string, args ...string) (string, error) {
-	return runCmd(r.path, env, "git", args...)
+func (r Repo) run(env []string, args ...string) (string, error) {
+	return runCmd(r.Path, env, "git", args...)
 }
 
 // runCmd runs a command and returns trimmed stdout; on failure the error
@@ -75,14 +78,14 @@ func runCmd(dir string, env []string, name string, args ...string) (string, erro
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func (r repo) add(paths ...string) error {
+func (r Repo) Add(paths ...string) error {
 	args := append([]string{"add", "--"}, paths...)
 	_, err := r.run(nil, args...)
 	return err
 }
 
-// commit creates a commit authored/committed by user. when==nil uses now.
-func (r repo) commit(user *ghUser, msg string, when *time.Time, allowEmpty bool) error {
+// Commit creates a commit authored/committed by user. when==nil uses now.
+func (r Repo) Commit(user *User, msg string, when *time.Time, allowEmpty bool) error {
 	env := []string{}
 	if user != nil {
 		env = append(env,
@@ -91,7 +94,7 @@ func (r repo) commit(user *ghUser, msg string, when *time.Time, allowEmpty bool)
 		)
 	}
 	if when != nil {
-		d := formatGitDate(*when)
+		d := FormatGitDate(*when)
 		env = append(env, "GIT_AUTHOR_DATE="+d, "GIT_COMMITTER_DATE="+d)
 	}
 	args := []string{"commit", "-m", msg}
@@ -102,7 +105,7 @@ func (r repo) commit(user *ghUser, msg string, when *time.Time, allowEmpty bool)
 	return err
 }
 
-func (r repo) resetHard(ref string) error {
+func (r Repo) ResetHard(ref string) error {
 	args := []string{"reset", "--hard"}
 	if ref != "" {
 		args = append(args, ref)
@@ -111,9 +114,9 @@ func (r repo) resetHard(ref string) error {
 	return err
 }
 
-func (r repo) head() (string, error) { return r.run(nil, "rev-parse", "HEAD") }
+func (r Repo) Head() (string, error) { return r.run(nil, "rev-parse", "HEAD") }
 
-func (r repo) currentBranch() string {
+func (r Repo) CurrentBranch() string {
 	out, err := r.run(nil, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return ""
@@ -121,22 +124,22 @@ func (r repo) currentBranch() string {
 	return out
 }
 
-func (r repo) isRepo() bool {
+func (r Repo) IsRepo() bool {
 	_, err := r.run(nil, "rev-parse", "--git-dir")
 	return err == nil
 }
 
-func (r repo) isClean() bool {
+func (r Repo) IsClean() bool {
 	out, err := r.run(nil, "status", "--porcelain")
 	return err == nil && strings.TrimSpace(out) == ""
 }
 
-func (r repo) fileInHEAD(rel string) bool {
+func (r Repo) FileInHEAD(rel string) bool {
 	_, err := r.run(nil, "cat-file", "-e", "HEAD:"+rel)
 	return err == nil
 }
 
-func (r repo) filesInHEAD(prefix string) ([]string, error) {
+func (r Repo) FilesInHEAD(prefix string) ([]string, error) {
 	out, err := r.run(nil, "ls-tree", "-r", "--name-only", "HEAD", "--", prefix)
 	if err != nil || strings.TrimSpace(out) == "" {
 		return nil, nil
@@ -144,9 +147,9 @@ func (r repo) filesInHEAD(prefix string) ([]string, error) {
 	return strings.Split(out, "\n"), nil
 }
 
-// stagedOutside returns staged paths that are not under prefix, so a commit
+// StagedOutside returns staged paths that are not under prefix, so a commit
 // never sweeps up unrelated files.
-func (r repo) stagedOutside(prefix string) ([]string, error) {
+func (r Repo) StagedOutside(prefix string) ([]string, error) {
 	out, err := r.run(nil, "diff", "--cached", "--name-only")
 	if err != nil {
 		return nil, err
@@ -160,9 +163,9 @@ func (r repo) stagedOutside(prefix string) ([]string, error) {
 	return bad, nil
 }
 
-// markerCounts counts marker commits per calendar day in loc. This is the exact
-// number GitHub shows for the repository.
-func (r repo) markerCounts(loc *time.Location) map[string]int {
+// MarkerCounts counts commits whose subject starts with prefix per calendar day
+// in loc. This is the exact number GitHub shows for the repository.
+func (r Repo) MarkerCounts(loc *time.Location, prefix string) map[string]int {
 	out, err := r.run(nil, "log", "--format=%at%x09%s")
 	if err != nil {
 		return map[string]int{}
@@ -170,7 +173,7 @@ func (r repo) markerCounts(loc *time.Location) map[string]int {
 	counts := map[string]int{}
 	for _, line := range strings.Split(out, "\n") {
 		ts, subj, ok := strings.Cut(line, "\t")
-		if !ok || !strings.HasPrefix(subj, markerPrefix) {
+		if !ok || !strings.HasPrefix(subj, prefix) {
 			continue
 		}
 		sec, err := strconv.ParseInt(ts, 10, 64)
@@ -182,7 +185,7 @@ func (r repo) markerCounts(loc *time.Location) map[string]int {
 	return counts
 }
 
-func (r repo) aheadOfRemote(remote, branch string) bool {
+func (r Repo) AheadOfRemote(remote, branch string) bool {
 	if _, err := r.run(nil, "rev-parse", "--verify", remote+"/"+branch); err != nil {
 		_, headErr := r.run(nil, "rev-parse", "--verify", "HEAD")
 		return headErr == nil
@@ -191,10 +194,10 @@ func (r repo) aheadOfRemote(remote, branch string) bool {
 	return err == nil && strings.TrimSpace(out) != "0"
 }
 
-func (r repo) push(remote, branch string) error      { return r.pushArgs(false, remote, branch) }
-func (r repo) pushForce(remote, branch string) error { return r.pushArgs(true, remote, branch) }
+func (r Repo) Push(remote, branch string) error      { return r.pushArgs(false, remote, branch) }
+func (r Repo) PushForce(remote, branch string) error { return r.pushArgs(true, remote, branch) }
 
-func (r repo) pushArgs(force bool, remote, branch string) error {
+func (r Repo) pushArgs(force bool, remote, branch string) error {
 	args := []string{"-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", "push", "-u"}
 	if force {
 		args = append(args, "--force")
@@ -204,24 +207,24 @@ func (r repo) pushArgs(force bool, remote, branch string) error {
 	return err
 }
 
-func (r repo) fetch(remote string) error {
+func (r Repo) Fetch(remote string) error {
 	_, err := r.run(nil, "fetch", "--quiet", remote)
 	return err
 }
 
-// ensureIdentity sets repo-local identity from gh and uses gh for push auth.
+// EnsureIdentity sets repo-local identity from gh and uses gh for push auth.
 // It never touches global git config.
-func (r repo) ensureIdentity(u ghUser) error {
+func (r Repo) EnsureIdentity(u User) error {
 	if _, err := r.run(nil, "config", "--local", "user.name", u.Name); err != nil {
 		return err
 	}
 	if _, err := r.run(nil, "config", "--local", "user.email", u.Email); err != nil {
 		return err
 	}
-	return r.useGHCredentials()
+	return r.UseGHCredentials()
 }
 
-func (r repo) useGHCredentials() error {
+func (r Repo) UseGHCredentials() error {
 	_, _ = r.run(nil, "config", "--local", "--unset-all", "credential.helper")
 	_, _ = r.run(nil, "config", "--local", "--add", "credential.helper", "")
 	if _, err := r.run(nil, "config", "--local", "--add", "credential.helper", "!gh auth git-credential"); err != nil {
@@ -230,7 +233,7 @@ func (r repo) useGHCredentials() error {
 	return r.ensureHTTPSRemote("origin")
 }
 
-func (r repo) ensureHTTPSRemote(name string) error {
+func (r Repo) ensureHTTPSRemote(name string) error {
 	url, err := r.run(nil, "remote", "get-url", name)
 	if err != nil || url == "" {
 		return nil
@@ -242,50 +245,50 @@ func (r repo) ensureHTTPSRemote(name string) error {
 	return nil
 }
 
-func (r repo) remoteURL(name string) string {
+func (r Repo) RemoteURL(name string) string {
 	out, _ := r.run(nil, "remote", "get-url", name)
 	return strings.TrimSpace(out)
 }
 
-func (r repo) setRemote(name, url string) error {
+func (r Repo) SetRemote(name, url string) error {
 	_, _ = r.run(nil, "remote", "remove", name)
 	_, err := r.run(nil, "remote", "add", name, url)
 	return err
 }
 
-func (r repo) init(branch string) error {
-	if err := os.MkdirAll(r.path, 0o755); err != nil {
+func (r Repo) Init(branch string) error {
+	if err := os.MkdirAll(r.Path, 0o755); err != nil {
 		return err
 	}
 	if branch == "" {
-		branch = defaultBranch
+		branch = "main"
 	}
 	_, err := r.run(nil, "init", "-b", branch)
 	return err
 }
 
-func (r repo) createBranch(name, ref string) error {
+func (r Repo) CreateBranch(name, ref string) error {
 	_, err := r.run(nil, "branch", "-f", name, ref)
 	return err
 }
 
-func (r repo) deleteBranch(name string) error {
+func (r Repo) DeleteBranch(name string) error {
 	_, err := r.run(nil, "branch", "-D", name)
 	return err
 }
 
-// importEntry is one commit for fast-import: a file to add at a backdated time.
-type importEntry struct {
-	rel     string
-	when    time.Time
-	content []byte
-	message string
+// ImportEntry is one commit for fast-import: a file to add at a backdated time.
+type ImportEntry struct {
+	Rel     string
+	When    time.Time
+	Content []byte
+	Message string
 }
 
-// fastImport builds `entries` commits in a single git subprocess. parent is the
+// FastImport builds `entries` commits in a single git subprocess. parent is the
 // commit to start from ("" builds an orphan history). readme, when set, is
 // committed alongside the first entry.
-func (r repo) fastImport(branch, parent string, entries []importEntry, user ghUser, readme []byte) error {
+func (r Repo) FastImport(branch, parent string, entries []ImportEntry, user User, readme []byte) error {
 	var b bytes.Buffer
 	blob := 0
 	writeBlob := func(content []byte) int {
@@ -302,15 +305,15 @@ func (r repo) fastImport(branch, parent string, entries []importEntry, user ghUs
 	}
 
 	for i, e := range entries {
-		mark := writeBlob(e.content)
+		mark := writeBlob(e.Content)
 		fmt.Fprintf(&b, "commit refs/heads/%s\n", branch)
-		fmt.Fprintf(&b, "author %s <%s> %d %s\n", user.Name, user.Email, e.when.Unix(), e.when.Format("-0700"))
-		fmt.Fprintf(&b, "committer %s <%s> %d %s\n", user.Name, user.Email, e.when.Unix(), e.when.Format("-0700"))
-		fmt.Fprintf(&b, "data %d\n%s\n", len(e.message), e.message)
+		fmt.Fprintf(&b, "author %s <%s> %d %s\n", user.Name, user.Email, e.When.Unix(), e.When.Format("-0700"))
+		fmt.Fprintf(&b, "committer %s <%s> %d %s\n", user.Name, user.Email, e.When.Unix(), e.When.Format("-0700"))
+		fmt.Fprintf(&b, "data %d\n%s\n", len(e.Message), e.Message)
 		if i == 0 && parent != "" {
 			fmt.Fprintf(&b, "from %s\n", parent)
 		}
-		fmt.Fprintf(&b, "M 100644 :%d %s\n", mark, e.rel)
+		fmt.Fprintf(&b, "M 100644 :%d %s\n", mark, e.Rel)
 		if i == 0 && readmeMark > 0 {
 			fmt.Fprintf(&b, "M 100644 :%d README.md\n", readmeMark)
 		}
@@ -335,7 +338,7 @@ func (r repo) fastImport(branch, parent string, entries []importEntry, user ghUs
 	}
 
 	cmd := exec.Command("git", "fast-import", "--force", "--quiet")
-	cmd.Dir = r.path
+	cmd.Dir = r.Path
 	cmd.Stdin = &b
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -360,18 +363,18 @@ func sshToHTTPS(remote string) string {
 	return remote
 }
 
-func formatGitDate(t time.Time) string { return t.Format("2006-01-02T15:04:05-0700") }
+func FormatGitDate(t time.Time) string { return t.Format("2006-01-02T15:04:05-0700") }
 
-func commandExists(name string) bool {
+func CommandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
 }
 
-func ghAuthenticated() bool {
+func GitHubAuthenticated() bool {
 	return exec.Command("gh", "auth", "status").Run() == nil
 }
 
-func createGitHubRepo(name string, private bool) (string, error) {
+func CreateGitHubRepo(name string, private bool) (string, error) {
 	args := []string{"repo", "create", name}
 	if private {
 		args = append(args, "--private")
@@ -393,7 +396,7 @@ func createGitHubRepo(name string, private bool) (string, error) {
 	return url, nil
 }
 
-func cloneRepo(url, dest string) error {
+func Clone(url, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}

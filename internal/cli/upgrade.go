@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"fmt"
@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Srikumar6529/boothub/internal/gitops"
 )
 
 // modulePath is the root import path of this tool. `go install <modulePath>@latest`
@@ -30,7 +32,7 @@ func cmdUpgrade(args []string) error {
 		return nil
 	}
 
-	if !commandExists("go") {
+	if !gitops.CommandExists("go") {
 		return fmt.Errorf("Go is required to upgrade; install it from https://go.dev/dl/ (or reinstall with install.sh)")
 	}
 

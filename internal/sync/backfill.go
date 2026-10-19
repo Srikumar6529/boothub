@@ -1,13 +1,17 @@
-package main
+package sync
 
 import (
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Srikumar6529/boothub/internal/gitops"
+	"github.com/Srikumar6529/boothub/internal/heatmap"
+	"github.com/Srikumar6529/boothub/internal/marker"
 )
 
-type backfillOptions struct {
+type BackfillOptions struct {
 	Handle               string
 	Timezone             string
 	MaxPerDay            int
@@ -20,7 +24,7 @@ type backfillOptions struct {
 	SkipPush             bool
 }
 
-type backfillStats struct {
+type BackfillStats struct {
 	Days        int
 	Target      int
 	Existing    int
@@ -40,11 +44,11 @@ type backfillStats struct {
 // resolveTarget returns the per-day activity counts to match. It uses the local
 // cache for immutable past days and only calls the API when the cache is
 // missing or stale for the current local day.
-func (a *app) resolveTarget(opts backfillOptions, handle, tz string, loc *time.Location) (map[string]int, int, bool, bool, error) {
-	now := time.Now()
+func (e *Engine) resolveTarget(opts BackfillOptions, handle, tz string, loc *time.Location) (map[string]int, int, bool, bool, error) {
+	now := e.now()
 
-	cached, ok := loadHeatmapCache(handle, tz)
-	needFetch := opts.Refresh || !ok || !cached.freshFor(now, loc)
+	cached, ok := heatmap.LoadCache(handle, tz)
+	needFetch := opts.Refresh || !ok || !cached.FreshFor(now, loc)
 	if opts.NoRefresh && ok {
 		needFetch = false
 	}
@@ -54,7 +58,7 @@ func (a *app) resolveTarget(opts backfillOptions, handle, tz string, loc *time.L
 
 	refreshed := false
 	if needFetch {
-		hm, err := fetchHeatmap(handle, tz)
+		hm, err := heatmap.Fetch(handle, tz)
 		if err != nil {
 			if !ok {
 				return nil, 0, false, false, err
@@ -64,8 +68,8 @@ func (a *app) resolveTarget(opts backfillOptions, handle, tz string, loc *time.L
 		} else {
 			cached.Handle = handle
 			cached.Timezone = tz
-			cached.merge(hm, now)
-			if err := saveHeatmapCache(cached); err != nil {
+			cached.Merge(hm, now)
+			if err := heatmap.SaveCache(cached); err != nil {
 				fmt.Printf("warning: could not save heatmap cache: %v\n", err)
 			}
 			refreshed = true
@@ -107,42 +111,42 @@ func filterDays(raw map[string]int, since, until string, maxPerDay int) (map[str
 	return out, capped
 }
 
-// backfill tops up the history by exactly (target - existing) commits per day,
+// Backfill tops up the history by exactly (target - existing) commits per day,
 // creating every commit in a single `git fast-import` pass.
-func (a *app) backfill(opts backfillOptions) (backfillStats, error) {
-	handle, tz := a.names(opts.Handle, opts.Timezone)
+func (e *Engine) Backfill(opts BackfillOptions) (BackfillStats, error) {
+	handle, tz := e.names(opts.Handle, opts.Timezone)
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return backfillStats{}, fmt.Errorf("invalid timezone %q: %w", tz, err)
+		return BackfillStats{}, fmt.Errorf("invalid timezone %q: %w", tz, err)
 	}
 
-	target, capped, refreshed, fromCache, err := a.resolveTarget(opts, handle, tz, loc)
+	target, capped, refreshed, fromCache, err := e.resolveTarget(opts, handle, tz, loc)
 	if err != nil {
-		return backfillStats{}, err
+		return BackfillStats{}, err
 	}
 
-	r := a.repo()
-	if !r.isRepo() {
-		return backfillStats{}, fmt.Errorf("not a git repo: %s", a.cfg.RepoPath)
+	r := e.repo()
+	if !r.IsRepo() {
+		return BackfillStats{}, fmt.Errorf("not a git repo: %s", e.Cfg.RepoPath)
 	}
 
-	user, err := a.identity()
+	user, err := e.resolveUser()
 	if err != nil {
-		return backfillStats{}, fmt.Errorf("cannot determine GitHub identity: %w", err)
+		return BackfillStats{}, fmt.Errorf("cannot determine GitHub identity: %w", err)
 	}
 	if !opts.DryRun {
-		if err := r.ensureIdentity(user); err != nil {
-			return backfillStats{}, fmt.Errorf("git identity: %w", err)
+		if err := r.EnsureIdentity(user); err != nil {
+			return BackfillStats{}, fmt.Errorf("git identity: %w", err)
 		}
 	}
 
-	existing := r.markerCounts(loc)
+	existing := r.MarkerCounts(loc, marker.Prefix)
 	nextIndex, err := nextBackfillIndexes(r, target)
 	if err != nil {
-		return backfillStats{}, err
+		return BackfillStats{}, err
 	}
 
-	stats := backfillStats{
+	stats := BackfillStats{
 		CappedDays: capped,
 		DryRun:     opts.DryRun,
 		FromCache:  fromCache,
@@ -151,7 +155,7 @@ func (a *app) backfill(opts backfillOptions) (backfillStats, error) {
 		Until:      opts.Until,
 	}
 
-	var entries []importEntry
+	var entries []gitops.ImportEntry
 	for _, day := range unionDays(target, existing) {
 		want, have := target[day], existing[day]
 		stats.Target += want
@@ -184,33 +188,33 @@ func (a *app) backfill(opts backfillOptions) (backfillStats, error) {
 		for i := 0; i < need; i++ {
 			id := fmt.Sprintf("backfill-%d", start+1+i)
 			when := base.Add(time.Duration(i) * time.Second)
-			m := newMarker(id, triggerBackfill, when)
+			m := marker.New(id, marker.TriggerBackfill, when)
 			m.ActivityCount = want
-			content, err := encodeMarker(m)
+			content, err := marker.Encode(m)
 			if err != nil {
 				return stats, err
 			}
-			entries = append(entries, importEntry{
-				rel:     markerRelPath(day, id),
-				when:    when,
-				content: content,
-				message: markerPrefix + id,
+			entries = append(entries, gitops.ImportEntry{
+				Rel:     marker.RelPath(day, id),
+				When:    when,
+				Content: content,
+				Message: marker.Prefix + id,
 			})
 		}
 	}
 
 	if !opts.DryRun && len(entries) > 0 {
-		parent, _ := r.head()
-		if err := r.fastImport(a.cfg.Branch, parent, entries, user, nil); err != nil {
+		parent, _ := r.Head()
+		if err := r.FastImport(e.Cfg.Branch, parent, entries, user, nil); err != nil {
 			return stats, err
 		}
-		if err := r.resetHard(""); err != nil {
+		if err := r.ResetHard(""); err != nil {
 			return stats, err
 		}
 	}
 
-	if !opts.DryRun && !opts.SkipPush && (stats.Created > 0 || r.aheadOfRemote(a.cfg.Remote, a.cfg.Branch)) {
-		if err := r.push(a.cfg.Remote, a.cfg.Branch); err != nil {
+	if !opts.DryRun && !opts.SkipPush && (stats.Created > 0 || r.AheadOfRemote(e.Cfg.Remote, e.Cfg.Branch)) {
+		if err := r.Push(e.Cfg.Remote, e.Cfg.Branch); err != nil {
 			return stats, fmt.Errorf("commits are ready but push failed: %w\nFix auth/remote, then re-run: boothub backfill", err)
 		}
 		stats.Pushed = true
@@ -239,8 +243,8 @@ func unionDays(target, existing map[string]int) []string {
 
 // nextBackfillIndexes returns, for each target day, the highest existing
 // backfill-N index so new markers never collide with old ones.
-func nextBackfillIndexes(r repo, target map[string]int) (map[string]int, error) {
-	files, err := r.filesInHEAD(submissionsPrefix)
+func nextBackfillIndexes(r gitops.Repo, target map[string]int) (map[string]int, error) {
+	files, err := r.FilesInHEAD(marker.SubmissionsPrefix)
 	if err != nil {
 		return nil, err
 	}

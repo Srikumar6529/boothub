@@ -1,4 +1,4 @@
-package main
+package marker
 
 import (
 	"encoding/json"
@@ -12,23 +12,23 @@ import (
 )
 
 const (
-	markerSource   = "boothub"
-	markerVersion  = 1
-	markerPlatform = "boot.dev"
+	Source   = "boothub"
+	Version  = 1
+	Platform = "boot.dev"
 
-	triggerCLISubmit    = "cli_submit"
-	triggerCLIRunSubmit = "cli_run_submit"
-	triggerManual       = "manual"
-	triggerBackfill     = "backfill"
-	triggerExtension    = "extension"
+	TriggerCLISubmit    = "cli_submit"
+	TriggerCLIRunSubmit = "cli_run_submit"
+	TriggerManual       = "manual"
+	TriggerBackfill     = "backfill"
+	TriggerExtension    = "extension"
 
-	// markerPrefix is the commit subject every marker commit starts with.
-	markerPrefix = "boot.dev: complete "
+	// Prefix is the commit subject every marker commit starts with.
+	Prefix = "boot.dev: complete "
 
-	submissionsPrefix = "submissions/"
+	SubmissionsPrefix = "submissions/"
 )
 
-type marker struct {
+type Marker struct {
 	Source        string    `json:"source"`
 	Version       int       `json:"version"`
 	Platform      string    `json:"platform"`
@@ -39,18 +39,18 @@ type marker struct {
 	ActivityCount int       `json:"activity_count,omitempty"`
 }
 
-func newMarker(lessonID, trigger string, when time.Time) marker {
-	return marker{
-		Source:      markerSource,
-		Version:     markerVersion,
-		Platform:    markerPlatform,
+func New(lessonID, trigger string, when time.Time) Marker {
+	return Marker{
+		Source:      Source,
+		Version:     Version,
+		Platform:    Platform,
 		LessonID:    lessonID,
 		SubmittedAt: when.UTC(),
 		Trigger:     trigger,
 	}
 }
 
-func encodeMarker(m marker) ([]byte, error) {
+func Encode(m Marker) ([]byte, error) {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, err
@@ -62,7 +62,7 @@ func encodeMarker(m marker) ([]byte, error) {
 // separators, leading dots and ".." so an id can never escape submissions/.
 var lessonIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$`)
 
-func sanitizeLessonID(id string) (string, error) {
+func SanitizeLessonID(id string) (string, error) {
 	id = strings.TrimPrefix(strings.TrimSpace(id), "@")
 	if id == "" {
 		return "", fmt.Errorf("lesson id is empty")
@@ -75,20 +75,20 @@ func sanitizeLessonID(id string) (string, error) {
 	return id, nil
 }
 
-func dayKey(when time.Time, loc *time.Location) string {
+func DayKey(when time.Time, loc *time.Location) string {
 	return when.In(loc).Format("2006-01-02")
 }
 
 var dayKeyRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-func validDayKey(s string) bool { return dayKeyRe.MatchString(s) }
+func ValidDayKey(s string) bool { return dayKeyRe.MatchString(s) }
 
-func markerRelPath(day, lessonID string) string {
+func RelPath(day, lessonID string) string {
 	return path.Join("submissions", day, lessonID+".json")
 }
 
-// safeAbs resolves rel under repoPath, refusing anything that escapes it.
-func safeAbs(repoPath, rel string) (string, error) {
+// SafeAbs resolves rel under repoPath, refusing anything that escapes it.
+func SafeAbs(repoPath, rel string) (string, error) {
 	clean := path.Clean(rel)
 	if clean == "." || clean == ".." || path.IsAbs(clean) || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("unsafe marker path %q", rel)
@@ -99,16 +99,16 @@ func safeAbs(repoPath, rel string) (string, error) {
 	return filepath.Join(repoPath, filepath.FromSlash(clean)), nil
 }
 
-// writeMarker writes the marker atomically (temp file + rename).
-func writeMarker(repoPath, rel string, m marker) error {
-	abs, err := safeAbs(repoPath, rel)
+// Write writes the marker atomically (temp file + rename).
+func Write(repoPath, rel string, m Marker) error {
+	abs, err := SafeAbs(repoPath, rel)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return err
 	}
-	data, err := encodeMarker(m)
+	data, err := Encode(m)
 	if err != nil {
 		return err
 	}
@@ -131,8 +131,8 @@ func writeMarker(repoPath, rel string, m marker) error {
 	return os.Rename(name, abs)
 }
 
-func markerExists(repoPath, rel string) bool {
-	abs, err := safeAbs(repoPath, rel)
+func Exists(repoPath, rel string) bool {
+	abs, err := SafeAbs(repoPath, rel)
 	if err != nil {
 		return false
 	}
@@ -140,8 +140,8 @@ func markerExists(repoPath, rel string) bool {
 	return err == nil
 }
 
-func markerIdentical(repoPath, rel string, m marker) (bool, error) {
-	abs, err := safeAbs(repoPath, rel)
+func Identical(repoPath, rel string, m Marker) (bool, error) {
+	abs, err := SafeAbs(repoPath, rel)
 	if err != nil {
 		return false, err
 	}
@@ -152,7 +152,7 @@ func markerIdentical(repoPath, rel string, m marker) (bool, error) {
 		}
 		return false, err
 	}
-	want, err := encodeMarker(m)
+	want, err := Encode(m)
 	if err != nil {
 		return false, err
 	}

@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"bytes"
@@ -14,10 +14,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// --- timezone ---------------------------------------------------------------
+const userAgent = "boothub (+https://github.com/Srikumar6529/boothub)"
 
-// detectTimezone returns the best-effort IANA timezone for this machine.
-func detectTimezone() string {
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// DetectTimezone returns the best-effort IANA timezone for this machine.
+func DetectTimezone() string {
 	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" && tz != ":" {
 		if _, err := time.LoadLocation(tz); err == nil {
 			return tz
@@ -51,8 +53,6 @@ func timezoneFromLocaltime() string {
 	return ""
 }
 
-// --- boot.dev handle --------------------------------------------------------
-
 type bootdevConfig struct {
 	APIURL       string `yaml:"api_url"`
 	AccessToken  string `yaml:"access_token"`
@@ -60,10 +60,10 @@ type bootdevConfig struct {
 	LastRefresh  int64  `yaml:"last_refresh"`
 }
 
-// detectBootdevHandle resolves the user's Boot.dev handle from the official
+// DetectBootdevHandle resolves the user's Boot.dev handle from the official
 // CLI's stored credentials (~/.bootdev.yaml). The CLI never stores the handle,
 // so we call GET /v1/users with the access token.
-func detectBootdevHandle() (string, error) {
+func DetectBootdevHandle() (string, error) {
 	cfg, path, err := loadBootdevConfig()
 	if err != nil {
 		return "", err

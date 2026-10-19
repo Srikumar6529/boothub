@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Srikumar6529/boothub/internal/config"
+	"github.com/Srikumar6529/boothub/internal/gitops"
+	"github.com/Srikumar6529/boothub/internal/sync"
 )
 
 type setupOptions struct {
@@ -51,13 +55,13 @@ func runSetup(opts setupOptions) error {
 	}
 
 	reader := promptReader()
-	cfg := defaultConfig()
+	cfg := config.Default()
 
 	// Handle: flag -> bootdev CLI session -> prompt.
 	handle := strings.TrimPrefix(strings.TrimSpace(opts.Handle), "@")
 	if handle == "" {
 		fmt.Println("Detecting Boot.dev handle from bootdev login...")
-		if detected, err := detectBootdevHandle(); err == nil && detected != "" {
+		if detected, err := config.DetectBootdevHandle(); err == nil && detected != "" {
 			handle = detected
 			fmt.Printf("  found @%s via bootdev CLI session\n", handle)
 		} else if err != nil {
@@ -76,7 +80,7 @@ func runSetup(opts setupOptions) error {
 	// Timezone: flag -> OS (/etc/localtime, TZ) -> prompt.
 	tz := strings.TrimSpace(opts.Timezone)
 	if tz == "" {
-		tz = detectTimezone()
+		tz = config.DetectTimezone()
 		fmt.Printf("Detected timezone: %s\n", tz)
 	}
 	if !opts.NonInteractive {
@@ -89,7 +93,7 @@ func runSetup(opts setupOptions) error {
 
 	repoName := opts.RepoName
 	if repoName == "" {
-		repoName = defaultRepo
+		repoName = config.DefaultRepo
 	}
 	if !opts.NonInteractive {
 		repoName = prompt(reader, "GitHub repo name", repoName)
@@ -120,13 +124,13 @@ func runSetup(opts setupOptions) error {
 	}
 
 	cfg.Enabled = true
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if err := saveConfig(cfg); err != nil {
+	if err := config.Save(cfg); err != nil {
 		return err
 	}
-	cfgPath, _ := configPath()
+	cfgPath, _ := config.Path()
 	fmt.Printf("\nSaved config to %s\n", cfgPath)
 	fmt.Printf("Submissions repo: %s\n", cfg.RepoPath)
 
@@ -137,8 +141,7 @@ func runSetup(opts setupOptions) error {
 	}
 	if doBackfill {
 		fmt.Println("\nRunning intensity-matched backfill (this may take a while)...")
-		a := app{cfg: cfg}
-		stats, err := a.backfill(backfillOptions{
+		stats, err := sync.New(cfg).Backfill(sync.BackfillOptions{
 			Handle:    cfg.BootdevHandle,
 			Timezone:  cfg.Timezone,
 			MaxPerDay: opts.MaxPerDay,
@@ -168,17 +171,17 @@ func runSetup(opts setupOptions) error {
 func checkTools() error {
 	var missing []string
 	for _, t := range []string{"git", "gh"} {
-		if !commandExists(t) {
+		if !gitops.CommandExists(t) {
 			missing = append(missing, t)
 		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required tools: %s", strings.Join(missing, ", "))
 	}
-	if !ghAuthenticated() {
+	if !gitops.GitHubAuthenticated() {
 		return fmt.Errorf("GitHub CLI not authenticated; run: gh auth login")
 	}
-	if !commandExists("bootdev") {
+	if !gitops.CommandExists("bootdev") {
 		fmt.Println("Warning: bootdev not found on PATH.")
 		fmt.Println("Install with: go install github.com/bootdotdev/bootdev@latest")
 		fmt.Println("Then run: bootdev login")
@@ -187,15 +190,15 @@ func checkTools() error {
 }
 
 func provisionRepo(name, dest string, private bool) error {
-	r := repo{path: dest}
-	user, userErr := currentGHUser()
+	r := gitops.Repo{Path: dest}
+	user, userErr := gitops.CurrentUser()
 
-	if r.isRepo() {
+	if r.IsRepo() {
 		fmt.Printf("Using existing git repo at %s\n", dest)
 		if userErr != nil {
 			return fmt.Errorf("cannot determine GitHub identity: %w", userErr)
 		}
-		if err := r.ensureIdentity(user); err != nil {
+		if err := r.EnsureIdentity(user); err != nil {
 			return err
 		}
 		fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
@@ -212,21 +215,21 @@ func provisionRepo(name, dest string, private bool) error {
 	}
 
 	fmt.Printf("Creating GitHub repo %s...\n", name)
-	cloneURL, err := createGitHubRepo(name, private)
+	cloneURL, err := gitops.CreateGitHubRepo(name, private)
 	if err != nil {
 		return err
 	}
 
-	if err := cloneRepo(cloneURL, dest); err != nil {
+	if err := gitops.Clone(cloneURL, dest); err != nil {
 		fmt.Println("Clone failed; initializing locally...")
-		if err := r.init("main"); err != nil {
+		if err := r.Init("main"); err != nil {
 			return err
 		}
-		if err := r.setRemote("origin", cloneURL); err != nil {
+		if err := r.SetRemote("origin", cloneURL); err != nil {
 			return err
 		}
 	}
-	if err := r.ensureIdentity(user); err != nil {
+	if err := r.EnsureIdentity(user); err != nil {
 		return err
 	}
 	if err := seedIfEmpty(r, user); err != nil {
@@ -240,24 +243,24 @@ func provisionRepo(name, dest string, private bool) error {
 
 // seedIfEmpty creates the first commit (and branch) when the repo has no
 // commits, which is the normal state of a brand-new GitHub repo.
-func seedIfEmpty(r repo, user ghUser) error {
-	if head, err := r.head(); err == nil && head != "" {
+func seedIfEmpty(r gitops.Repo, user gitops.User) error {
+	if head, err := r.Head(); err == nil && head != "" {
 		return nil
 	}
-	readme := filepath.Join(r.path, "README.md")
+	readme := filepath.Join(r.Path, "README.md")
 	if _, err := os.Stat(readme); os.IsNotExist(err) {
-		if err := os.WriteFile(readme, defaultReadme, 0o644); err != nil {
+		if err := os.WriteFile(readme, []byte(gitops.DefaultReadme), 0o644); err != nil {
 			return err
 		}
 	}
-	if err := r.add("README.md"); err != nil {
+	if err := r.Add("README.md"); err != nil {
 		return err
 	}
-	if err := r.commit(&user, "Initial commit", nil, false); err != nil {
+	if err := r.Commit(&user, "Initial commit", nil, false); err != nil {
 		return err
 	}
-	if url := r.remoteURL("origin"); url != "" {
-		if err := r.push("origin", defaultBranch); err != nil {
+	if url := r.RemoteURL("origin"); url != "" {
+		if err := r.Push("origin", config.DefaultBranch); err != nil {
 			return fmt.Errorf("initial push failed: %w", err)
 		}
 	}

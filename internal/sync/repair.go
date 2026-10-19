@@ -1,4 +1,4 @@
-package main
+package sync
 
 import (
 	"encoding/json"
@@ -8,9 +8,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Srikumar6529/boothub/internal/gitops"
+	"github.com/Srikumar6529/boothub/internal/marker"
 )
 
-type repairOptions struct {
+type RepairOptions struct {
 	Handle               string
 	Timezone             string
 	Yes                  bool
@@ -24,7 +27,7 @@ type repairOptions struct {
 	Push                 bool
 }
 
-type repairStats struct {
+type RepairStats struct {
 	Days       int
 	Commits    int
 	Preserved  int
@@ -40,8 +43,6 @@ type repairStats struct {
 
 const rebuildBranch = "boothub-rebuild"
 
-var defaultReadme = []byte("# bootdev-submissions\n\nSynced automatically by [BootHub](https://github.com/Srikumar6529/boothub).\n")
-
 type preservedMarker struct {
 	id      string
 	rel     string
@@ -49,16 +50,16 @@ type preservedMarker struct {
 	content []byte
 }
 
-// repair rebuilds the whole history so each day has exactly as many commits as
+// Repair rebuilds the whole history so each day has exactly as many commits as
 // the heatmap shows, keeping real submission markers where possible.
-func (a *app) repair(opts repairOptions) (repairStats, error) {
-	handle, tz := a.names(opts.Handle, opts.Timezone)
+func (e *Engine) Repair(opts RepairOptions) (RepairStats, error) {
+	handle, tz := e.names(opts.Handle, opts.Timezone)
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return repairStats{}, fmt.Errorf("invalid timezone %q: %w", tz, err)
+		return RepairStats{}, fmt.Errorf("invalid timezone %q: %w", tz, err)
 	}
 
-	target, _, refreshed, fromCache, err := a.resolveTarget(backfillOptions{
+	target, _, refreshed, fromCache, err := e.resolveTarget(BackfillOptions{
 		Handle:               handle,
 		Timezone:             tz,
 		Refresh:              opts.Refresh,
@@ -69,25 +70,25 @@ func (a *app) repair(opts repairOptions) (repairStats, error) {
 		IncludeGitHubCommits: opts.IncludeGitHubCommits,
 	}, handle, tz, loc)
 	if err != nil {
-		return repairStats{}, err
+		return RepairStats{}, err
 	}
 
-	r := a.repo()
-	if !r.isRepo() {
-		return repairStats{}, fmt.Errorf("not a git repo: %s", a.cfg.RepoPath)
+	r := e.repo()
+	if !r.IsRepo() {
+		return RepairStats{}, fmt.Errorf("not a git repo: %s", e.Cfg.RepoPath)
 	}
-	if !r.isClean() {
-		return repairStats{}, fmt.Errorf("working tree at %s has uncommitted changes; commit or discard them before repairing", a.cfg.RepoPath)
+	if !r.IsClean() {
+		return RepairStats{}, fmt.Errorf("working tree at %s has uncommitted changes; commit or discard them before repairing", e.Cfg.RepoPath)
 	}
 
-	user, err := a.identity()
+	user, err := e.resolveUser()
 	if err != nil {
-		return repairStats{}, fmt.Errorf("cannot determine GitHub identity: %w", err)
+		return RepairStats{}, fmt.Errorf("cannot determine GitHub identity: %w", err)
 	}
 
-	preserved, droppedPre, err := readPreservedMarkers(a.cfg.RepoPath)
+	preserved, droppedPre, err := readPreservedMarkers(e.Cfg.RepoPath)
 	if err != nil {
-		return repairStats{}, err
+		return RepairStats{}, err
 	}
 	for day, list := range preserved {
 		if _, ok := target[day]; !ok {
@@ -97,13 +98,13 @@ func (a *app) repair(opts repairOptions) (repairStats, error) {
 
 	entries, stats, err := buildRepairPlan(target, preserved, droppedPre, loc)
 	if err != nil {
-		return repairStats{}, err
+		return RepairStats{}, err
 	}
 	stats.DryRun = opts.DryRun
 	stats.FromCache = fromCache
 	stats.Refreshed = refreshed
 
-	if old := r.markerCounts(loc); len(old) > 0 {
+	if old := r.MarkerCounts(loc, marker.Prefix); len(old) > 0 {
 		for _, c := range old {
 			stats.OldCommits += c
 		}
@@ -118,28 +119,28 @@ func (a *app) repair(opts repairOptions) (repairStats, error) {
 	}
 
 	// Back up the old history locally and (best effort) on the remote.
-	if head, err := r.head(); err == nil && head != "" {
-		backup := fmt.Sprintf("boothub-backup-%d", time.Now().Unix())
-		if err := r.createBranch(backup, "HEAD"); err == nil {
+	if head, err := r.Head(); err == nil && head != "" {
+		backup := fmt.Sprintf("boothub-backup-%d", e.now().Unix())
+		if err := r.CreateBranch(backup, "HEAD"); err == nil {
 			stats.Backup = backup
 			if opts.Push {
-				if err := r.push(a.cfg.Remote, backup); err != nil {
+				if err := r.Push(e.Cfg.Remote, backup); err != nil {
 					fmt.Printf("warning: could not push backup branch %s: %v\n", backup, err)
 				}
 			}
 		}
 	}
 
-	if err := r.fastImport(rebuildBranch, "", entries, user, defaultReadme); err != nil {
+	if err := r.FastImport(rebuildBranch, "", entries, user, []byte(gitops.DefaultReadme)); err != nil {
 		return stats, err
 	}
-	if err := r.resetHard(rebuildBranch); err != nil {
+	if err := r.ResetHard(rebuildBranch); err != nil {
 		return stats, err
 	}
-	_ = r.deleteBranch(rebuildBranch)
+	_ = r.DeleteBranch(rebuildBranch)
 
 	if opts.Push {
-		if err := r.pushForce(a.cfg.Remote, a.cfg.Branch); err != nil {
+		if err := r.PushForce(e.Cfg.Remote, e.Cfg.Branch); err != nil {
 			return stats, fmt.Errorf("rebuilt history locally but force-push failed: %w", err)
 		}
 		stats.Pushed = true
@@ -147,8 +148,8 @@ func (a *app) repair(opts repairOptions) (repairStats, error) {
 	return stats, nil
 }
 
-func buildRepairPlan(target map[string]int, preserved map[string][]preservedMarker, droppedPre int, loc *time.Location) ([]importEntry, repairStats, error) {
-	stats := repairStats{Dropped: droppedPre}
+func buildRepairPlan(target map[string]int, preserved map[string][]preservedMarker, droppedPre int, loc *time.Location) ([]gitops.ImportEntry, RepairStats, error) {
+	stats := RepairStats{Dropped: droppedPre}
 
 	days := make([]string, 0, len(target))
 	for day := range target {
@@ -156,7 +157,7 @@ func buildRepairPlan(target map[string]int, preserved map[string][]preservedMark
 	}
 	sort.Strings(days)
 
-	var entries []importEntry
+	var entries []gitops.ImportEntry
 	for _, day := range days {
 		want := target[day]
 		base, err := dayNoon(day, loc)
@@ -171,25 +172,25 @@ func buildRepairPlan(target map[string]int, preserved map[string][]preservedMark
 			keep = keep[:want]
 		}
 
-		dayEntries := make([]importEntry, 0, want)
+		dayEntries := make([]gitops.ImportEntry, 0, want)
 		// Normalize every commit to noon on the target day in the configured
 		// timezone: GitHub buckets by the offset stored in the commit, so a
 		// preserved UTC timestamp would otherwise land on the wrong day.
 		for i, p := range keep {
 			when := base.Add(time.Duration(i) * time.Second)
-			dayEntries = append(dayEntries, importEntry{rel: p.rel, when: when, content: p.content, message: markerPrefix + p.id})
+			dayEntries = append(dayEntries, gitops.ImportEntry{Rel: p.rel, When: when, Content: p.content, Message: marker.Prefix + p.id})
 			stats.Preserved++
 		}
 		for n := len(keep) + 1; n <= want; n++ {
 			id := fmt.Sprintf("backfill-%d", n)
 			when := base.Add(time.Duration(n) * time.Second)
-			m := newMarker(id, triggerBackfill, when)
+			m := marker.New(id, marker.TriggerBackfill, when)
 			m.ActivityCount = want
-			content, err := encodeMarker(m)
+			content, err := marker.Encode(m)
 			if err != nil {
 				return nil, stats, err
 			}
-			dayEntries = append(dayEntries, importEntry{rel: markerRelPath(day, id), when: when, content: content, message: markerPrefix + id})
+			dayEntries = append(dayEntries, gitops.ImportEntry{Rel: marker.RelPath(day, id), When: when, Content: content, Message: marker.Prefix + id})
 		}
 
 		if len(dayEntries) == 0 {
@@ -225,18 +226,18 @@ func readPreservedMarkers(repoPath string) (map[string][]preservedMarker, int, e
 		}
 		rel = filepath.ToSlash(rel)
 		parts := strings.Split(rel, "/")
-		if len(parts) != 3 || parts[0] != "submissions" || !validDayKey(parts[1]) {
+		if len(parts) != 3 || parts[0] != "submissions" || !marker.ValidDayKey(parts[1]) {
 			return nil
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return nil
 		}
-		var m marker
+		var m marker.Marker
 		if err := json.Unmarshal(content, &m); err != nil {
 			return nil
 		}
-		if m.Trigger == "" || m.Trigger == triggerBackfill {
+		if m.Trigger == "" || m.Trigger == marker.TriggerBackfill {
 			return nil
 		}
 		id := m.LessonID
