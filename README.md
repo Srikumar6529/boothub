@@ -124,7 +124,7 @@ boothub repair --yes       # rebuild + force-push
 
 ### Small and fast
 
-BootHub is a single binary in one Go package. The only dependency is a YAML parser for the config file. Anything that touches many commits (backfill, repair) is piped through one `git fast-import` subprocess instead of one `git commit` per commit, so syncing thousands of days takes seconds rather than minutes, and repeat runs make zero API calls.
+BootHub is a single static binary. The only dependency is a YAML parser for the config file. Anything that touches many commits (backfill, repair) is piped through one `git fast-import` subprocess instead of one `git commit` per commit, so syncing thousands of days takes seconds rather than minutes, and repeat runs make zero API calls.
 
 
 ## Setup UX
