@@ -3,12 +3,25 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 )
 
 // version is set at build time:
 //
 //	go build -ldflags "-X main.version=v1.2.3"
 var version = "dev"
+
+// buildVersion prefers an ldflags value, then the module version recorded by
+// `go install module@version`.
+func buildVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 const usage = `boothub - turn Boot.dev activity into GitHub contribution greens
 
@@ -58,7 +71,7 @@ func main() {
 	case "config", "status":
 		err = cmdConfig(os.Args[2:])
 	case "version", "-v", "--version":
-		fmt.Println("boothub " + version)
+		fmt.Println("boothub " + buildVersion())
 		return
 	case "help", "-h", "--help":
 		fmt.Print(usage)

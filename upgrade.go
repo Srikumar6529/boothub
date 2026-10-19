@@ -21,7 +21,7 @@ func cmdUpgrade(args []string) error {
 	}
 
 	if *check {
-		fmt.Printf("current: %s\n", version)
+		fmt.Printf("current: %s\n", buildVersion())
 		latest, err := latestVersion()
 		if err != nil {
 			return err
