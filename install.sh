@@ -44,10 +44,13 @@ fi
 mkdir -p "$BIN_DIR"
 info "Installing boothub into $BIN_DIR"
 
+INSTALL_LOG="$(mktemp "${TMPDIR:-/tmp}/boothub-install.XXXXXX")"
+trap 'rm -f "$INSTALL_LOG"' EXIT
+
 install_ok=0
-if GOBIN="$BIN_DIR" go install "${REPO}/cmd/boothub@latest" 2>/tmp/boothub-install.err; then
+if GOBIN="$BIN_DIR" go install "${REPO}/cmd/boothub@latest" 2>"$INSTALL_LOG"; then
   install_ok=1
-elif GOBIN="$BIN_DIR" go install "${REPO}/cmd/boothub@main" 2>/tmp/boothub-install.err; then
+elif GOBIN="$BIN_DIR" go install "${REPO}/cmd/boothub@main" 2>"$INSTALL_LOG"; then
   install_ok=1
 else
   # Local checkout fallback (when running ./install.sh from a clone)
@@ -59,7 +62,7 @@ else
 fi
 
 [[ "$install_ok" -eq 1 ]] || {
-  cat /tmp/boothub-install.err 2>/dev/null || true
+  cat "$INSTALL_LOG" 2>/dev/null || true
   die "could not install boothub. Try: go install ${REPO}/cmd/boothub@latest"
 }
 

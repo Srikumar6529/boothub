@@ -1,11 +1,11 @@
 package bootdev
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -22,6 +22,26 @@ type RunResult struct {
 	Submitted bool
 	Command   string // "submit" or "run"
 }
+
+// captureLimit is how much of the child's output we keep in memory for
+// pass/fail detection. A TUI can redraw constantly; there is no reason to keep
+// the whole stream.
+const captureLimit = 256 << 10
+
+type tailWriter struct {
+	buf []byte
+	max int
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailWriter) String() string { return string(t.buf) }
 
 func Proxy(req RunRequest) (RunResult, error) {
 	bin := req.Binary
@@ -42,13 +62,14 @@ func Proxy(req RunRequest) (RunResult, error) {
 	cmd := exec.Command(bin, req.Args...)
 	cmd.Stdin = os.Stdin
 
-	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	stdout := &tailWriter{max: captureLimit}
+	stderr := &tailWriter{max: captureLimit}
+	cmd.Stdout = io.MultiWriter(os.Stdout, stdout)
+	cmd.Stderr = io.MultiWriter(os.Stderr, stderr)
 
 	err := cmd.Run()
-	result.Stdout = stdoutBuf.String()
-	result.Stderr = stderrBuf.String()
+	result.Stdout = stdout.String()
+	result.Stderr = stderr.String()
 
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -70,7 +91,7 @@ func isSubmitInvocation(args []string) bool {
 	}
 	if args[0] == "run" {
 		for _, a := range args[1:] {
-			if a == "-s" || a == "--submit" {
+			if a == "-s" || a == "--submit" || a == "--submit=true" {
 				return true
 			}
 		}
@@ -85,7 +106,13 @@ func commandName(args []string) string {
 	return args[0]
 }
 
+var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// extractLessonID prefers a UUID-looking positional argument; otherwise it
+// falls back to the first non-flag token. This avoids mistaking the value of a
+// flag such as `--course 1` for the lesson id.
 func extractLessonID(args []string) string {
+	var fallback string
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") {
 			continue
@@ -93,18 +120,28 @@ func extractLessonID(args []string) string {
 		if a == "submit" || a == "run" {
 			continue
 		}
-		// UUID-ish or any non-flag token after the command.
-		return a
+		if uuidRe.MatchString(a) {
+			return a
+		}
+		if fallback == "" {
+			fallback = a
+		}
 	}
-	return ""
+	return fallback
 }
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+// stripANSI removes terminal escape sequences so pass/fail needles are not
+// broken up by color codes (e.g. "Try \x1b[31magain\x1b[0m").
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // Passed prefers false negatives over false positives.
 func Passed(r RunResult) bool {
 	if r.ExitCode != 0 {
 		return false
 	}
-	combined := strings.ToLower(r.Stdout + "\n" + r.Stderr)
+	combined := strings.ToLower(stripANSI(r.Stdout + "\n" + r.Stderr))
 	failureNeedles := []string{
 		"submission failed",
 		"failed to submit",

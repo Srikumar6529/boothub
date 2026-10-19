@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/Srikumar6529/boothub/internal/config"
 	"github.com/Srikumar6529/boothub/internal/marker"
 	"github.com/Srikumar6529/boothub/internal/sync"
+	"github.com/spf13/cobra"
 )
 
 func newSyncCmd() *cobra.Command {

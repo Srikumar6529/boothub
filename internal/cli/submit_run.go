@@ -5,18 +5,20 @@ import (
 	"os"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/Srikumar6529/boothub/internal/bootdev"
 	"github.com/Srikumar6529/boothub/internal/config"
 	"github.com/Srikumar6529/boothub/internal/marker"
 	"github.com/Srikumar6529/boothub/internal/sync"
+	"github.com/spf13/cobra"
 )
 
 func newSubmitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "submit [args...]",
 		Short: "Proxy bootdev submit; sync to GitHub on success",
-		Args:  cobra.ArbitraryArgs,
+		// DisableFlagParsing forwards every flag/arg to bootdev untouched.
+		// Without this, cobra rejects bootdev's own flags (e.g. `run -s`).
+		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return proxyAndMaybeSync(append([]string{"submit"}, args...))
 		},
@@ -25,9 +27,9 @@ func newSubmitCmd() *cobra.Command {
 
 func newRunCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "run [args...]",
-		Short: "Proxy bootdev run; sync only with -s/--submit on success",
-		Args:  cobra.ArbitraryArgs,
+		Use:                "run [args...]",
+		Short:              "Proxy bootdev run; sync only with -s/--submit on success",
+		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return proxyAndMaybeSync(append([]string{"run"}, args...))
 		},
@@ -46,12 +48,7 @@ func proxyAndMaybeSync(args []string) error {
 		return err
 	}
 
-	if !result.Submitted {
-		os.Exit(result.ExitCode)
-		return nil
-	}
-
-	if !bootdev.Passed(result) {
+	if !result.Submitted || !bootdev.Passed(result) {
 		os.Exit(result.ExitCode)
 		return nil
 	}

@@ -3,7 +3,6 @@ package detect
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -51,6 +50,5 @@ func fromLocaltimeSymlink() string {
 			return tz
 		}
 	}
-	_ = runtime.GOOS
 	return ""
 }

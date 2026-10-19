@@ -21,6 +21,7 @@ type Options struct {
 	RepoName       string
 	RepoPath       string
 	Private        bool
+	Public         bool
 	SkipBackfill   bool
 	MaxPerDay      int
 }
@@ -35,7 +36,7 @@ func Run(opts Options) error {
 		return err
 	}
 
-	reader := bufio.NewReader(os.Stdin)
+	reader := promptReader()
 	cfg := config.Default()
 
 	// Handle: flag → bootdev CLI session → prompt
@@ -83,19 +84,21 @@ func Run(opts Options) error {
 	repoPath := opts.RepoPath
 	if repoPath == "" {
 		home, _ := os.UserHomeDir()
-		repoPath = filepath.Join(home, repoName)
+		repoPath = filepath.Join(home, filepath.Base(repoName))
 	}
 	if !opts.NonInteractive {
 		repoPath = prompt(reader, "Local clone path", repoPath)
 	}
 	cfg.RepoPath = repoPath
 
-	private := true
+	private := opts.Private && !opts.Public
 	if !opts.NonInteractive {
-		ans := prompt(reader, "Private GitHub repo? [Y/n]", "Y")
+		def := "Y"
+		if !private {
+			def = "N"
+		}
+		ans := prompt(reader, "Private GitHub repo? [Y/n]", def)
 		private = !strings.EqualFold(strings.TrimSpace(ans), "n")
-	} else {
-		private = opts.Private
 	}
 
 	if err := provisionRepo(repoName, repoPath, private); err != nil {
@@ -129,7 +132,7 @@ func Run(opts Options) error {
 		if err != nil {
 			return fmt.Errorf("backfill failed: %w", err)
 		}
-		fmt.Printf("Backfill done: %d days, %d commits created, %d skipped", stats.Days, stats.Created, stats.Skipped)
+		fmt.Printf("Backfill done: %d commits across %d days (skipped %d days already matching)", stats.Created, stats.Days, stats.Skipped)
 		if stats.CappedDays > 0 {
 			fmt.Printf(" (%d days capped)", stats.CappedDays)
 		}
@@ -140,7 +143,11 @@ func Run(opts Options) error {
 	fmt.Println("  boothub submit [UUID]")
 	fmt.Println("  boothub run -s [UUID]")
 	fmt.Println("  boothub sync --lesson <id>")
-	fmt.Println("  boothub backfill")
+	fmt.Println("  boothub backfill            # incremental, cached")
+	fmt.Println("  boothub repair --yes        # rebuild history for an exact match")
+	fmt.Println()
+	fmt.Println("Note: for your private submissions repo to count, enable")
+	fmt.Println("GitHub → Settings → Profile → \"Include private contributions on my profile\".")
 	return nil
 }
 
@@ -167,14 +174,17 @@ func checkTools() error {
 
 func provisionRepo(name, dest string, private bool) error {
 	repo := gitops.Repo{Path: dest}
+	user, userErr := gitops.CurrentGitHubUser()
+
 	if repo.IsGitRepo() {
 		fmt.Printf("Using existing git repo at %s\n", dest)
-		if err := repo.EnsureIdentity(); err != nil {
+		if userErr != nil {
+			return fmt.Errorf("cannot determine GitHub identity: %w", userErr)
+		}
+		if err := repo.EnsureIdentity(user); err != nil {
 			return err
 		}
-		if user, err := gitops.CurrentGitHubUser(); err == nil {
-			fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
-		}
+		fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
 		return nil
 	}
 	if _, err := os.Stat(dest); err == nil {
@@ -184,6 +194,9 @@ func provisionRepo(name, dest string, private bool) error {
 			return fmt.Errorf("path %s exists and is not an empty git repo", dest)
 		}
 	}
+	if userErr != nil {
+		return fmt.Errorf("cannot determine GitHub identity: %w", userErr)
+	}
 
 	fmt.Printf("Creating GitHub repo %s...\n", name)
 	cloneURL, err := gitops.CreateGitHubRepo(name, private)
@@ -191,42 +204,66 @@ func provisionRepo(name, dest string, private bool) error {
 		return err
 	}
 
-	// Prefer clone; if remote is empty, init locally and set remote.
 	if err := gitops.Clone(cloneURL, dest); err != nil {
-		fmt.Println("Clone of empty repo failed (normal for brand-new repos); initializing locally...")
-		if err := repo.Init(); err != nil {
-			return err
-		}
-		if err := repo.EnsureIdentity(); err != nil {
+		fmt.Println("Clone failed; initializing locally...")
+		if err := repo.Init("main"); err != nil {
 			return err
 		}
 		if err := repo.SetRemote("origin", cloneURL); err != nil {
 			return err
 		}
-		// Seed README so first push has a branch.
-		readme := filepath.Join(dest, "README.md")
-		content := "# bootdev-submissions\n\nSynced automatically by [BootHub](https://github.com/Srikumar6529/boothub).\n"
+	}
+	if err := repo.EnsureIdentity(user); err != nil {
+		return err
+	}
+	if err := seedIfEmpty(repo, user); err != nil {
+		return err
+	}
+
+	fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
+	fmt.Printf("Repo ready at %s\n", dest)
+	return nil
+}
+
+// seedIfEmpty creates the first commit (and branch) when the repo has no
+// commits, which is the normal state of a brand-new GitHub repo.
+func seedIfEmpty(repo gitops.Repo, user gitops.GitHubUser) error {
+	if head, err := repo.Head(); err == nil && head != "" {
+		return nil
+	}
+	readme := filepath.Join(repo.Path, "README.md")
+	content := "# bootdev-submissions\n\nSynced automatically by [BootHub](https://github.com/Srikumar6529/boothub).\n"
+	if _, err := os.Stat(readme); os.IsNotExist(err) {
 		if err := os.WriteFile(readme, []byte(content), 0o644); err != nil {
 			return err
 		}
-		if err := repo.Add("README.md"); err != nil {
-			return err
-		}
-		if err := repo.Commit("Initial commit", nil); err != nil {
-			return err
-		}
+	}
+	if err := repo.Add("README.md"); err != nil {
+		return err
+	}
+	if err := repo.CommitAs(&user, "Initial commit", nil, false); err != nil {
+		return err
+	}
+	if url := repo.RemoteURL("origin"); url != "" {
 		if err := repo.Push("origin", "main"); err != nil {
 			return fmt.Errorf("initial push failed: %w", err)
 		}
 	}
-	if err := repo.EnsureIdentity(); err != nil {
-		return err
-	}
-	if user, err := gitops.CurrentGitHubUser(); err == nil {
-		fmt.Printf("  commits will use GitHub user @%s (%s)\n", user.Login, user.Email)
-	}
-	fmt.Printf("Repo ready at %s\n", dest)
 	return nil
+}
+
+// promptReader returns a reader for interactive prompts. When stdin is not a
+// terminal (e.g. `curl | bash`), it reads from /dev/tty so the user can still
+// answer instead of silently accepting defaults.
+func promptReader() *bufio.Reader {
+	info, err := os.Stdin.Stat()
+	if err == nil && (info.Mode()&os.ModeCharDevice) != 0 {
+		return bufio.NewReader(os.Stdin)
+	}
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		return bufio.NewReader(tty)
+	}
+	return bufio.NewReader(os.Stdin)
 }
 
 func prompt(r *bufio.Reader, label, def string) string {
@@ -235,11 +272,13 @@ func prompt(r *bufio.Reader, label, def string) string {
 	} else {
 		fmt.Printf("%s: ", label)
 	}
-	line, _ := r.ReadString('\n')
+	line, err := r.ReadString('\n')
+	if err != nil && line == "" {
+		return def
+	}
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return def
 	}
 	return line
 }
-

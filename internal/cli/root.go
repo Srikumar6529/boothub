@@ -7,6 +7,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is overridable at build time: -ldflags "-X github.com/Srikumar6529/boothub/internal/cli.Version=v1.2.3"
+var Version = "dev"
+
 func Execute() int {
 	root := &cobra.Command{
 		Use:   "boothub",
@@ -15,16 +18,17 @@ func Execute() int {
 GitHub repo you own so your contribution graph turns green.
 
 Also backfills past Boot.dev activity from your public profile heatmap.`,
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
 	root.AddCommand(newSetupCmd())
-	root.AddCommand(newInitCmd())
 	root.AddCommand(newSubmitCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newSyncCmd())
 	root.AddCommand(newBackfillCmd())
+	root.AddCommand(newRepairCmd())
 	root.AddCommand(newConfigCmd())
 
 	if err := root.Execute(); err != nil {

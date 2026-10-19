@@ -3,61 +3,85 @@ package cli
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/Srikumar6529/boothub/internal/config"
 	"github.com/Srikumar6529/boothub/internal/sync"
+	"github.com/spf13/cobra"
 )
 
 func newBackfillCmd() *cobra.Command {
-	var (
-		handle    string
-		timezone  string
-		maxPerDay int
-		force     bool
-	)
+	opts := sync.BackfillOptions{}
+	var force bool
+
 	cmd := &cobra.Command{
 		Use:   "backfill",
 		Short: "Intensity-match GitHub commits from your Boot.dev activity heatmap",
-		Long: `Fetches your public Boot.dev activity heatmap and creates one backdated
-git commit per activity unit (count commits for a day with count N).
+		Long: `Fetches your Boot.dev activity heatmap and makes the number of commits per
+day equal the activity count Boot.dev shows for that day.
 
-Markers already committed in git are skipped (idempotent).
-If a previous run left files on disk but failed to push, re-running will push them.`,
+Past days are served from a local cache and only the current day is re-fetched,
+so repeat runs are fast and do not re-create existing commits.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if force {
+				return fmt.Errorf("`backfill --force` was replaced by `boothub repair --yes`:\n" +
+					"  backfill only adds missing commits; repair rewrites history to match the heatmap exactly")
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 			engine := sync.New(cfg)
-			fmt.Println("Fetching Boot.dev activity heatmap...")
-			stats, err := engine.Backfill(sync.BackfillOptions{
-				Handle:    handle,
-				Timezone:  timezone,
-				MaxPerDay: maxPerDay,
-				Force:     force,
-			})
+			if !opts.DryRun {
+				fmt.Println("Syncing Boot.dev activity to GitHub...")
+			}
+			stats, err := engine.Backfill(opts)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Days: %d | Planned units: %d | Created: %d | Skipped: %d",
-				stats.Days, stats.TotalPlanned, stats.Created, stats.Skipped)
-			if stats.CappedDays > 0 {
-				fmt.Printf(" | Capped days: %d", stats.CappedDays)
-			}
-			if stats.Pushed {
-				fmt.Printf(" | Pushed to GitHub")
-			}
-			fmt.Println()
-			if stats.Created == 0 && stats.Skipped > 0 && !stats.Pushed {
-				fmt.Println("Nothing new to sync — markers are already committed and pushed.")
-				fmt.Println("To rebuild: boothub backfill --force")
-			}
+			printBackfillStats(stats)
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&handle, "handle", "", "Boot.dev handle (default: config)")
-	cmd.Flags().StringVar(&timezone, "timezone", "", "IANA timezone (default: config)")
-	cmd.Flags().IntVar(&maxPerDay, "max-per-day", 0, "Cap commits per day (0 = uncapped intensity match)")
-	cmd.Flags().BoolVar(&force, "force", false, "Recreate commits even if markers already exist in git")
+
+	cmd.Flags().StringVar(&opts.Handle, "handle", "", "Boot.dev handle (default: config)")
+	cmd.Flags().StringVar(&opts.Timezone, "timezone", "", "IANA timezone (default: config)")
+	cmd.Flags().IntVar(&opts.MaxPerDay, "max-per-day", 0, "Cap commits per day (0 = exact match)")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Show what would be created without committing")
+	cmd.Flags().BoolVar(&opts.Refresh, "refresh", false, "Force a heatmap API refresh even if the cache is fresh")
+	cmd.Flags().BoolVar(&opts.NoRefresh, "no-refresh", false, "Never call the API; use the cached heatmap")
+	cmd.Flags().StringVar(&opts.Since, "since", "", "Only sync days on or after YYYY-MM-DD")
+	cmd.Flags().StringVar(&opts.Until, "until", "", "Only sync days on or before YYYY-MM-DD")
+	cmd.Flags().BoolVar(&opts.IncludeGitHubCommits, "include-github-commits", false, "Also count Boot.dev's view of your real GitHub commits")
+	cmd.Flags().BoolVar(&force, "force", false, "Deprecated: use `boothub repair --yes`")
+	_ = cmd.Flags().MarkHidden("force")
 	return cmd
+}
+
+func printBackfillStats(stats sync.BackfillStats) {
+	prefix := ""
+	if stats.DryRun {
+		prefix = "[dry-run] would create: "
+	} else {
+		prefix = "created: "
+	}
+	source := "heatmap cache"
+	if stats.Refreshed {
+		source = "heatmap API"
+	}
+	fmt.Printf("%s%d commits across %d days (target %d, existing %d) [source: %s]\n",
+		prefix, stats.Created, stats.Days, stats.Target, stats.Existing, source)
+	if stats.CappedDays > 0 {
+		fmt.Printf("capped days: %d\n", stats.CappedDays)
+	}
+	if stats.OverCommits > 0 {
+		fmt.Printf("note: %d days have %d more commits than Boot.dev shows.\n"+
+			"      Run `boothub repair --yes` to rebuild history for an exact match.\n",
+			stats.OverDays, stats.OverCommits)
+	}
+	if !stats.DryRun {
+		if stats.Pushed {
+			fmt.Println("pushed to GitHub")
+		} else if stats.Created == 0 {
+			fmt.Println("nothing to do — GitHub already matches Boot.dev")
+		}
+	}
 }
