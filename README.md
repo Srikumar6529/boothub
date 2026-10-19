@@ -39,8 +39,15 @@ bootdev login
 ### Manual install
 
 ```sh
-go install github.com/Srikumar6529/boothub/cmd/boothub@latest
+go install github.com/Srikumar6529/boothub@latest
 boothub setup
+```
+
+Keep it up to date with:
+
+```sh
+boothub upgrade          # rebuilds+installs the latest version
+boothub upgrade --check  # just show current vs latest
 ```
 
 ## Daily usage
@@ -51,6 +58,7 @@ boothub run -s               # syncs only when -s/--submit is used and checks pa
 boothub sync --lesson <id>   # manual marker (web lessons)
 boothub backfill             # incremental, cached intensity match
 boothub repair --yes         # rebuild history for an exact match (one-time fix)
+boothub upgrade              # update to the latest version
 boothub config               # show status
 ```
 
@@ -113,6 +121,11 @@ boothub repair --yes       # rebuild + force-push
 - Old history is preserved on a `boothub-backup-*` branch (locally **and** on GitHub).
 - Real submission markers are kept; only surplus/noise commits are dropped.
 - Builds thousands of commits in one `git fast-import` pass, so it takes seconds.
+
+### Small and fast
+
+BootHub is a single binary in one Go package. The only dependency is a YAML parser for the config file. Anything that touches many commits (backfill, repair) is piped through one `git fast-import` subprocess instead of one `git commit` per commit, so syncing thousands of days takes seconds rather than minutes, and repeat runs make zero API calls.
+
 
 ## Setup UX
 

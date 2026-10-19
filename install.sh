@@ -48,22 +48,22 @@ INSTALL_LOG="$(mktemp "${TMPDIR:-/tmp}/boothub-install.XXXXXX")"
 trap 'rm -f "$INSTALL_LOG"' EXIT
 
 install_ok=0
-if GOBIN="$BIN_DIR" go install "${REPO}/cmd/boothub@latest" 2>"$INSTALL_LOG"; then
+	if GOBIN="$BIN_DIR" go install "${REPO}@latest" 2>"$INSTALL_LOG"; then
   install_ok=1
-elif GOBIN="$BIN_DIR" go install "${REPO}/cmd/boothub@main" 2>"$INSTALL_LOG"; then
+elif GOBIN="$BIN_DIR" go install "${REPO}@main" 2>"$INSTALL_LOG"; then
   install_ok=1
 else
   # Local checkout fallback (when running ./install.sh from a clone)
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ -f "$SCRIPT_DIR/go.mod" ]]; then
     info "Installing from local checkout"
-    (cd "$SCRIPT_DIR" && GOBIN="$BIN_DIR" go install ./cmd/boothub) && install_ok=1
+    (cd "$SCRIPT_DIR" && GOBIN="$BIN_DIR" go install .) && install_ok=1
   fi
 fi
 
 [[ "$install_ok" -eq 1 ]] || {
   cat "$INSTALL_LOG" 2>/dev/null || true
-  die "could not install boothub. Try: go install ${REPO}/cmd/boothub@latest"
+  die "could not install boothub. Try: go install ${REPO}@latest"
 }
 
 # --- PATH --------------------------------------------------------------------
